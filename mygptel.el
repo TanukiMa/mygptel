@@ -1,35 +1,14 @@
-;;; mygptel.el --- Ollama/Gemini backend switcher for gptel -*- lexical-binding: t; -*-
+;;; mygptel.el --- Dynamic backend switcher for gptel -*- lexical-binding: t; -*-
 
 ;; Configuration for using gptel from Emacs on Windows or WSL2 Debian GNU/Linux.
 ;;
-;; When executing M-x gptel:
-;;   1. Asks whether to use Ollama or Gemini.
-;;   2. Asks which model to use for the selected provider
-;;      (Ollama: fetches from `ollama list` equivalent,
-;;       Gemini: queries ListModels API).
-;; Then opens the gptel buffer with the chosen backend/model.
+;; This extension allows users to switch between Ollama and Gemini backends
+;; dynamically whenever `M-x gptel` is called.
 ;;
-;; The Gemini API key is retrieved from .authinfo (auth-source).
-;; For example, add the following line to ~/.authinfo.gpg:
-;;
-;;   machine api.google.com login apikey password YOUR_GEMINI_API_KEY
-;;
-;; In your init.el, use (load-file "path/to/mygptel.el") or
-;; (add-to-list 'load-path "...") followed by (require 'mygptel).
 ;; Package-Requires: ((emacs "28.1") (gptel "0"))
 
 ;;; Code:
 
-(defun mygptel--check-dependencies ()
-  "Check if required packages are installed. If not, warn the user."
-  (unless (locate-library "gptel")
-    (user-error
-     "mygptel requires the 'gptel' package to function.
-Please install it first:
-  M-x package-install [Enter] gptel
-Then restart Emacs or reload this file.")))
-
-(mygptel--check-dependencies)
 (require 'gptel)
 (require 'auth-source)
 (require 'url)
@@ -39,23 +18,27 @@ Then restart Emacs or reload this file.")))
   :group 'gptel)
 
 (defcustom mygptel-ollama-host "localhost:11434"
-  "The host:port of the Ollama server.
-Assumes Ollama is listening on localhost for both Windows / WSL2.
-Change this if running on a different host."
+  "The host:port of the Ollama server. Default is localhost:11434."
   :type 'string
   :group 'mygptel)
 
 (defcustom mygptel-gemini-authinfo-host "api.google.com"
-  "The machine (host) name used to retrieve the Gemini API key from .authinfo.
-Example: machine api.google.com login apikey password YOUR_KEY"
+  "The machine (host) name used to retrieve the Gemini API key from .authinfo."
   :type 'string
   :group 'mygptel)
 
-;;; Gemini API key
+(defvar mygptel-log-directory
+  (expand-file-name "Documents/mygptel/"
+                    (if (eq system-type 'windows-nt)
+                        (or (getenv "USERPROFILE") (getenv "HOME") "~")
+                      (or (getenv "HOME") "~")))
+  "Directory to save LLM interaction logs (Markdown).")
+
+;;; API Key Management
 
 (defun mygptel-gemini-api-key ()
   "Retrieve the Gemini API key from auth-source (.authinfo).
-If not found, provide a clear instruction on how to fix it."
+Returns the secret string or signals an error if not found."
   (if-let* ((found (car (auth-source-search
                           :host mygptel-gemini-authinfo-host
                           :user "apikey"
@@ -65,11 +48,11 @@ If not found, provide a clear instruction on how to fix it."
       (if (functionp secret) (funcall secret) secret)
     (user-error
      "Gemini API key not found in auth-source.
-Please add the following line to your ~/.authinfo or ~/.authinfo.gpg:
+Please add the following line to ~/.authinfo or ~/.authinfo.gpg:
   machine %s login apikey password YOUR_GEMINI_API_KEY"
      mygptel-gemini-authinfo-host)))
 
-;;; JSON retrieval helper
+;;; HTTP/JSON Helper
 
 (defun mygptel--url-get-json (url)
   "Send a GET request to URL and return the response body as a JSON plist."
@@ -84,111 +67,80 @@ Please add the following line to your ~/.authinfo or ~/.authinfo.gpg:
           (json-parse-buffer :object-type 'plist :array-type 'list))
       (kill-buffer buf))))
 
-;;; Ollama
+;;; Backend Discovery & Creation
 
 (defun mygptel--ollama-fetch-models ()
-  "Return a list of installed model names from the local Ollama instance.
-If connection fails, provide actionable advice."
+  "Fetch installed model names from the local Ollama instance."
   (condition-case err
       (let* ((url (format "http://%s/api/tags" mygptel-ollama-host))
              (data (mygptel--url-get-json url))
              (models (plist-get data :models)))
         (mapcar (lambda (m) (plist-get m :name)) models))
     (error
-     (user-error "Could not connect to Ollama at %s.
-Please ensure the Ollama server is running.
-(Try running 'ollama serve' in a separate terminal or check the Ollama tray icon).
+     (user-error "Could not connect to Ollama at %s. Please ensure it is running.
 Error: %s"
                  mygptel-ollama-host (error-message-string err)))))
 
-(defvar mygptel--ollama-backend nil
-  "Cache for the Ollama backend created by gptel-make-ollama.")
-
-(defun mygptel--ollama-backend (model-strings)
-  "Create or update the Ollama backend using MODEL-STRINGS as available models."
-  (setq mygptel--ollama-backend
-        (gptel-make-ollama "Ollama"
-          :host mygptel-ollama-host
-          :stream t
-          :models (mapcar #'intern model-strings))))
-
-;;; Gemini
+(defun mygptel--ollama-create-backend (model-strings)
+  "Create and return an Ollama backend with the given MODEL-STRINGS."
+  (gptel-make-ollama "Ollama"
+                     :host mygptel-ollama-host
+                     :stream t
+                     :models (mapcar #'intern model-strings)))
 
 (defun mygptel--gemini-fetch-models ()
-  "Return a list of model names supporting generateContent from the Gemini ListModels API."
+  "Fetch Gemini model names that support generateContent."
   (condition-case err
       (let* ((key (mygptel-gemini-api-key))
-             (url (format
-                   "https://generativelanguage.googleapis.com/v1beta/models?key=%s"
-                   (url-hexify-string key)))
+             (url (format "https://generativelanguage.googleapis.com/v1beta/models?key=%s"
+                          (url-hexify-string key)))
              (data (mygptel--url-get-json url))
              (models (plist-get data :models)))
         (delq nil
               (mapcar
                (lambda (m)
                  (when (member "generateContent"
-                                (plist-get m :supportedGenerationMethods))
+                               (plist-get m :supportedGenerationMethods))
                    (string-remove-prefix "models/" (plist-get m :name))))
                models)))
     (error
      (user-error "Could not retrieve Gemini model list: %s"
                  (error-message-string err)))))
 
-(defvar mygptel--gemini-backend nil
-  "Cache for the Gemini backend created by gptel-make-gemini.")
+(defun mygptel--gemini-create-backend (model-strings)
+  "Create and return a Gemini backend with the given MODEL-STRINGS."
+  (gptel-make-gemini "Gemini"
+                     :key #'mygptel-gemini-api-key
+                     :stream t
+                     :models (mapcar #'intern model-strings)))
 
-(defun mygptel--gemini-backend (model-strings)
-  "Create or update the Gemini backend using MODEL-STRINGS as available models."
-  (setq mygptel--gemini-backend
-        (gptel-make-gemini "Gemini"
-          :key #'mygptel-gemini-api-key
-          :stream t
-          :models (mapcar #'intern model-strings))))
-
-;;; Provider/Model Selection
+;;; Selection Logic
 
 (defun mygptel--select-backend-and-model ()
-  "Prompt the user to select a provider (Ollama/Gemini) then a model, and return (BACKEND . MODEL)."
+  "Prompt the user to select provider and model.
+Returns a cons cell (BACKEND . MODEL-SYMBOL)."
   (let* ((provider (completing-read "LLM provider: " '("Ollama" "Gemini") nil t))
          (model-strings (pcase provider
-                           ("Ollama" (mygptel--ollama-fetch-models))
-                           ("Gemini" (mygptel--gemini-fetch-models))))
+                          ("Ollama" (mygptel--ollama-fetch-models))
+                          ("Gemini" (mygptel--gemini-fetch-models))))
          (_ (unless model-strings
               (user-error "No available models found for %s" provider)))
          (model-name (completing-read (format "%s model: " provider)
-                                       model-strings nil t))
+                                     model-strings nil t))
          (backend (pcase provider
-                    ("Ollama" (mygptel--ollama-backend model-strings))
-                    ("Gemini" (mygptel--gemini-backend model-strings)))))
+                    ("Ollama" (mygptel--ollama-create-backend model-strings))
+                    ("Gemini" (mygptel--gemini-create-backend model-strings)))))
     (cons backend (intern model-name))))
 
-;;; Intercept M-x gptel
-;;
-;; DESIGN DECISION:
-;; The `gptel` command's interactive specification is evaluated BEFORE the body
-;; of the function. Since `gptel` determines the buffer name and backend
-;; using the current value of `gptel-backend` (which defaults to OpenAI/ChatGPT),
-;; simply prompting for a backend inside a standard :after or :around advice
-;; is too late—the `gptel` command would have already committed to its
-;; default backend and prompted for an OpenAI key.
-;;
-;; To ensure the backend/model selection happens PRIOR to `gptel`'s internal
-;; setup, we use `advice-add` with a custom `:around` function that provides
-;; its own `(interactive ...)` specification. This effectively overrides
-;; the original interactive behavior of `gptel`.
-;;
-;; While this is a bit "hacky" and could break if `gptel` fundamentally changes
-;; how its interactive arguments are handled, it is the most reliable way
-;; to achieve dynamic backend switching at the moment.
-(defun mygptel--around-gptel (orig-fn &rest app-args)
-  "Prompt for backend/model selection when calling `gptel` interactively."
+;;; Gptel Interception
+
+(defun gptel-backend-switcher-around (orig-fn &rest app-args)
+  "Intercept gptel command to prompt for backend/model selection."
   (interactive
-   (progn
-     (pcase-let ((`(,backend . ,model) (mygptel--select-backend-and-model)))
-       (setq gptel-backend backend
-             gptel-model model))
-     (let* ((backend (default-value 'gptel-backend))
-            (backend-name (format "*%s*" (gptel-backend-name backend)))
+   (pcase-let ((`(,backend . ,model) (mygptel--select-backend-and-model)))
+     (setq gptel-backend backend
+           gptel-model model)
+     (let* ((backend-name (format "*%s*" (gptel-backend-name backend)))
             (buffer-name (read-buffer "Create or choose gptel buffer: " backend-name)))
        (list buffer-name
              nil
@@ -197,32 +149,15 @@ Error: %s"
              t))))
   (apply orig-fn app-args))
 
-(advice-add 'gptel :around #'mygptel--around-gptel)
+(advice-add 'gptel :around #'gptel-backend-switcher-around)
 
-;;; Automatic local transcript saving (Markdown)
-
-;; The save directory may vary by environment (Windows / WSL2),
-;; so it's intended to be overridden in init.el: (setq mygptel-log-directory "...").
-;;
-;; Note: Computing the default value using `~` expansion or (getenv "HOME")
-;; can be problematic. On Windows, if Emacs is started without a shell
-;; (e.g., via shortcut), NTEmacs often rewrites HOME to %APPDATA% (Roaming).
-;; This results in logs being saved to unexpected locations like
-;; .../AppData/Roaming/Documents/mygptel/.
-;; We avoid this by prioritizing USERPROFILE, which is always set by Windows.
-(defvar mygptel-log-directory
-  (expand-file-name "Documents/mygptel/"
-                     (if (eq system-type 'windows-nt)
-                         (or (getenv "USERPROFILE") (getenv "HOME") "~")
-                       (or (getenv "HOME") "~")))
-  "Directory to save LLM interaction logs (Markdown).
-Can be overridden in init.el using `setq'.")
+;;; Transcript Saving
 
 (defvar-local mygptel--log-file nil
-  "The save path for this buffer's log file. Determined on first save and stored buffer-locally.")
+  "Buffer-local path to the transcript log file.")
 
-(defun mygptel--log-file-for-buffer ()
-  "Return the absolute path to the log file for the current buffer (determine if not yet created)."
+(defun mygptel--get-log-file ()
+  "Compute or return the log file path for the current buffer."
   (or mygptel--log-file
       (let ((dir (expand-file-name mygptel-log-directory)))
         (make-directory dir t)
@@ -232,9 +167,9 @@ Can be overridden in init.el using `setq'.")
                dir)))))
 
 (defun mygptel--save-transcript (_beg _end)
-  "Save the entire buffer as Markdown locally whenever a gptel response is inserted."
+  "Save buffer content to Markdown file on every gptel response."
   (when (bound-and-true-p gptel-mode)
-    (write-region (point-min) (point-max) (mygptel--log-file-for-buffer) nil 'quiet)))
+    (write-region (point-min) (point-max) (mygptel--get-log-file) nil 'quiet)))
 
 (add-hook 'gptel-post-response-functions #'mygptel--save-transcript)
 
