@@ -53,7 +53,8 @@ Example: machine api.google.com login apikey password YOUR_KEY"
 ;;; Gemini API key
 
 (defun mygptel-gemini-api-key ()
-  "Retrieve the Gemini API key from auth-source (.authinfo)."
+  "Retrieve the Gemini API key from auth-source (.authinfo).
+If not found, provide a clear instruction on how to fix it."
   (if-let* ((found (car (auth-source-search
                           :host mygptel-gemini-authinfo-host
                           :user "apikey"
@@ -62,7 +63,9 @@ Example: machine api.google.com login apikey password YOUR_KEY"
             (secret (plist-get found :secret)))
       (if (functionp secret) (funcall secret) secret)
     (user-error
-     "Gemini API key not found. Please add \"machine %s login apikey password YOUR_KEY\" to your .authinfo"
+     "Gemini API key not found in auth-source.
+Please add the following line to your ~/.authinfo or ~/.authinfo.gpg:
+  machine %s login apikey password YOUR_GEMINI_API_KEY"
      mygptel-gemini-authinfo-host)))
 
 ;;; JSON retrieval helper
@@ -83,14 +86,18 @@ Example: machine api.google.com login apikey password YOUR_KEY"
 ;;; Ollama
 
 (defun mygptel--ollama-fetch-models ()
-  "Return a list of installed model names from the local Ollama instance."
+  "Return a list of installed model names from the local Ollama instance.
+If connection fails, provide actionable advice."
   (condition-case err
       (let* ((url (format "http://%s/api/tags" mygptel-ollama-host))
              (data (mygptel--url-get-json url))
              (models (plist-get data :models)))
         (mapcar (lambda (m) (plist-get m :name)) models))
     (error
-     (user-error "Could not connect to Ollama (%s): %s"
+     (user-error "Could not connect to Ollama at %s.
+Please ensure the Ollama server is running.
+(Try running 'ollama serve' in a separate terminal or check the Ollama tray icon).
+Error: %s"
                  mygptel-ollama-host (error-message-string err)))))
 
 (defvar mygptel--ollama-backend nil
@@ -155,16 +162,23 @@ Example: machine api.google.com login apikey password YOUR_KEY"
     (cons backend (intern model-name))))
 
 ;;; Intercept M-x gptel
-
-;; Note: The (interactive ...) spec of the `gptel` command itself is evaluated
-;; before the body of the advice. Since it determines the buffer name and
-;; API key using the "pre-selection" default value of gptel-backend
-;; (which is nil if unset), simply prompting for backend/model in the
-;; advice body is too late (gptel will assume ChatGPT/OpenAI and prompt
-;; for an API key).
-;; Therefore, we provide (interactive ...) to the advice function itself
-;; and use nadvice to prioritize it, bypassing the original interactive
-;; spec to ensure backend/model selection happens first.
+;;
+;; DESIGN DECISION:
+;; The `gptel` command's interactive specification is evaluated BEFORE the body
+;; of the function. Since `gptel` determines the buffer name and backend
+;; using the current value of `gptel-backend` (which defaults to OpenAI/ChatGPT),
+;; simply prompting for a backend inside a standard :after or :around advice
+;; is too late—the `gptel` command would have already committed to its
+;; default backend and prompted for an OpenAI key.
+;;
+;; To ensure the backend/model selection happens PRIOR to `gptel`'s internal
+;; setup, we use `advice-add` with a custom `:around` function that provides
+;; its own `(interactive ...)` specification. This effectively overrides
+;; the original interactive behavior of `gptel`.
+;;
+;; While this is a bit "hacky" and could break if `gptel` fundamentally changes
+;; how its interactive arguments are handled, it is the most reliable way
+;; to achieve dynamic backend switching at the moment.
 (defun mygptel--around-gptel (orig-fn &rest app-args)
   "Prompt for backend/model selection when calling `gptel` interactively."
   (interactive
@@ -173,8 +187,9 @@ Example: machine api.google.com login apikey password YOUR_KEY"
        (setq gptel-backend backend
              gptel-model model))
      (let* ((backend (default-value 'gptel-backend))
-            (backend-name (format "*%s*" (gptel-backend-name backend))))
-       (list (read-buffer "Create or choose gptel buffer: " backend-name)
+            (backend-name (format "*%s*" (gptel-backend-name backend)))
+            (buffer-name (read-buffer "Create or choose gptel buffer: " backend-name)))
+       (list buffer-name
              nil
              (and (use-region-p)
                   (buffer-substring (region-beginning) (region-end)))
