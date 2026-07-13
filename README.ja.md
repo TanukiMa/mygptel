@@ -48,5 +48,9 @@ machine api.google.com login apikey password YOUR_GEMINI_API_KEY
 
 選択後、選んだバックエンドの名前が付いたバッファで対話が始まります。
 
+## ライセンス
+
+このプロジェクトは [GNU GPL v3](LICENSE) ライセンスの下で公開されています。
+
 ---
 English documentation: [README.md](./README.md)

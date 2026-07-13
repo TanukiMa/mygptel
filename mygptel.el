@@ -19,6 +19,16 @@
 
 ;;; Code:
 
+(defun mygptel--check-dependencies ()
+  "Check if required packages are installed. If not, warn the user."
+  (unless (locate-library "gptel")
+    (user-error
+     "mygptel requires the 'gptel' package to function.
+Please install it first:
+  M-x package-install [Enter] gptel
+Then restart Emacs or reload this file.")))
+
+(mygptel--check-dependencies)
 (require 'gptel)
 (require 'auth-source)
 (require 'url)

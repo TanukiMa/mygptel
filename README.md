@@ -48,5 +48,9 @@ Simply run `M-x gptel`. You will be prompted:
 
 The conversation will then start in a buffer named after the selected backend.
 
+## License
+
+This project is licensed under the [GNU GPL v3](LICENSE).
+
 ---
 日本語のドキュメントはこちら: [README.ja.md](./README.ja.md)
