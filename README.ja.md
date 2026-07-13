@@ -14,6 +14,11 @@
 - **対話ログの自動保存**: LLM との対話を Markdown ファイルとしてローカルディレクトリに自動保存します。
 - **Windows & WSL2 最適化**: Windows 環境においてホームディレクトリのパスを適切に処理し、ログが意図しない場所（AppData など）に保存されるのを防ぎます。
 
+## 前提条件
+
+本パッケージを利用するには [gptel](https://github.com/karthink/gptel) が必要です。
+`mygptel` をインストールする前に、`gptel` がインストールされていることを確認してください。
+
 ## インストール
 
 1. `mygptel.el` を Emacs の設定ディレクトリにコピーします。
@@ -51,6 +56,8 @@ machine api.google.com login apikey password YOUR_GEMINI_API_KEY
 ## ライセンス
 
 このプロジェクトは [GNU GPL v3](LICENSE) ライセンスの下で公開されています。
+
+作者: Ma Tanuki
 
 ---
 English documentation: [README.md](./README.md)

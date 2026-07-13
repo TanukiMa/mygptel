@@ -14,6 +14,11 @@ It simplifies the process of managing multiple providers by prompting you to sel
 - **Automatic Transcript Saving**: Automatically saves your conversations as Markdown files in a local directory, ensuring you never lose your AI interactions.
 - **Windows & WSL2 Optimized**: Handles home directory paths correctly on Windows to ensure logs are saved in the expected location.
 
+## Prerequisites
+
+This package requires [gptel](https://github.com/karthink/gptel). 
+Please make sure `gptel` is installed in your Emacs environment before installing `mygptel`.
+
 ## Installation
 
 1. Copy `mygptel.el` to your Emacs configuration directory.
@@ -51,6 +56,8 @@ The conversation will then start in a buffer named after the selected backend.
 ## License
 
 This project is licensed under the [GNU GPL v3](LICENSE).
+
+Author: Ma Tanuki
 
 ---
 日本語のドキュメントはこちら: [README.ja.md](./README.ja.md)
