@@ -16,6 +16,7 @@
 ;;
 ;; In your init.el, use (load-file "path/to/mygptel.el") or
 ;; (add-to-list 'load-path "...") followed by (require 'mygptel).
+;; Package-Requires: ((emacs "28.1") (gptel "0"))
 
 ;;; Code:
 
