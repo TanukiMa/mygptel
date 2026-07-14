@@ -12,6 +12,7 @@
 (require 'gptel)
 (require 'auth-source)
 (require 'url)
+(require 'cl-lib)
 
 (defgroup mygptel nil
   "Ollama / Gemini backend switching configuration for gptel."
@@ -19,6 +20,21 @@
 
 (defcustom mygptel-ollama-host "localhost:11434"
   "The host:port of the Ollama server. Default is localhost:11434."
+  :type 'string
+  :group 'mygptel)
+
+(defcustom mygptel-mistral-host "localhost:1234"
+  "The host:port of the Mistral.rs server. Default is localhost:1234."
+  :type 'string
+  :group 'mygptel)
+
+(defcustom mygptel-vllm-host "localhost:8000"
+  "The host:port of the vLLM server. Default is localhost:8000."
+  :type 'string
+  :group 'mygptel)
+
+(defcustom mygptel-sglang-host "localhost:30000"
+  "The host:port of the SGLang server. Default is localhost:30000."
   :type 'string
   :group 'mygptel)
 
@@ -66,6 +82,28 @@ Please add the following line to ~/.authinfo or ~/.authinfo.gpg:
             (error "Failed to parse HTTP response: %s" url))
           (json-parse-buffer :object-type 'plist :array-type 'list))
       (kill-buffer buf))))
+
+;;; OpenAI-Compatible Backend Helpers
+
+(defun mygptel--openai-compatible-fetch-models (host)
+  "Fetch model names from an OpenAI-compatible server at HOST."
+  (condition-case err
+      (let* ((url (format "http://%s/v1/models" host))
+             (data (mygptel--url-get-json url))
+             ;; OpenAI-compatible servers use either :objects or :data
+             (models (or (plist-get data :objects) (plist-get data :data))))
+        (mapcar (lambda (m) (plist-get m :id)) models))
+    (error
+     (user-error "Could not connect to OpenAI-compatible server at %s.
+Error: %s" host (error-message-string err)))))
+
+(defun mygptel--openai-compatible-create-backend (name host model-strings)
+  "Create and return an OpenAI-compatible backend for NAME at HOST."
+  (gptel-make-openai name
+                     :host host
+                     :key "dummy-key"
+                     :stream t
+                     :models (mapcar #'intern model-strings)))
 
 ;;; Backend Discovery & Creation
 
@@ -116,20 +154,32 @@ Error: %s"
 
 ;;; Selection Logic
 
+(defvar mygptel-providers
+  `((:name "Ollama"    :fetch mygptel--ollama-fetch-models    :create mygptel--ollama-create-backend)
+    (:name "Gemini"    :fetch mygptel--gemini-fetch-models    :create mygptel--gemini-create-backend)
+    (:name "Mistral.rs" :fetch mygptel--openai-compatible-fetch-models :create mygptel--openai-compatible-create-backend :host mygptel-mistral-host)
+    (:name "vLLM"       :fetch mygptel--openai-compatible-fetch-models :create mygptel--openai-compatible-create-backend :host mygptel-vllm-host)
+    (:name "SGLang"     :fetch mygptel--openai-compatible-fetch-models :create mygptel--openai-compatible-create-backend :host mygptel-sglang-host))
+  "List of provider configurations.")
+
 (defun mygptel--select-backend-and-model ()
   "Prompt the user to select provider and model.
 Returns a cons cell (BACKEND . MODEL-SYMBOL)."
-  (let* ((provider (completing-read "LLM provider: " '("Ollama" "Gemini") nil t))
-         (model-strings (pcase provider
-                          ("Ollama" (mygptel--ollama-fetch-models))
-                          ("Gemini" (mygptel--gemini-fetch-models))))
+  (let* ((provider-name (completing-read "LLM provider: "
+                                       (mapcar (lambda (p) (plist-get p :name)) mygptel-providers) nil t))
+         (provider (car (cl-remove-if-not (lambda (p) (string= (plist-get p :name) provider-name))
+                                         mygptel-providers)))
+         (fetch-fn (plist-get provider :fetch))
+         (create-fn (plist-get provider :create))
+         (host-sym (plist-get provider :host))
+         (host (if host-sym (symbol-value host-sym)))
+         (model-strings (if host (funcall fetch-fn host) (funcall fetch-fn)))
          (_ (unless model-strings
-              (user-error "No available models found for %s" provider)))
-         (model-name (completing-read (format "%s model: " provider)
+              (user-error "No available models found for %s" provider-name)))
+         (model-name (completing-read (format "%s model: " provider-name)
                                      model-strings nil t))
-         (backend (pcase provider
-                    ("Ollama" (mygptel--ollama-create-backend model-strings))
-                    ("Gemini" (mygptel--gemini-create-backend model-strings)))))
+         (backend (if host (funcall create-fn provider-name host model-strings)
+                           (funcall create-fn model-strings))))
     (cons backend (intern model-name))))
 
 ;;; Gptel Interception
